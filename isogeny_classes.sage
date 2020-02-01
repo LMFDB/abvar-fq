@@ -49,10 +49,8 @@ The following example assumes that the lmfdb and abvar-fq repositories are insta
 
     sage: cd lmfdb
     sage: from lmfdb import db
-    sage: cd ../abvar-fq
-    sage: %attach isogeny_classes.sage
+    sage: %attach ../abvar-fq/isogeny_classes.sage
     sage: IC = IsogenyClasses()
-    sage: cd ../lmfdb
     sage: IC.run_parallel(4)
 
 The stages to be executed are controlled by the configuration file `config.ini`.
@@ -122,6 +120,7 @@ from sage.misc.cachefunc import cached_method, cached_function
 from sage.misc.mrange import cartesian_product_iterator
 from sage.all import Polynomial
 from sage.rings.polynomial.weil.weil_polynomials import WeilPolynomials
+from sage.repl.attach import attached_files
 import json, os, re, sys, time, shutil
 import psutil
 import heapq
@@ -254,7 +253,7 @@ def basechange_transform(g, r):
         signed_coeffs = [(-1)^j * c for j, c in enumerate(Lpoly)]
         bc_coeffs = [1]
         for i in range(1, g+1):
-            bc_coeffs.append((-1)^i*sum(c*prod(signed_coeffs[j]^e for j,e in D.iteritems()) for c, D in zip(coeffs[i], exps[i])))
+            bc_coeffs.append((-1)^i*sum(c*prod(signed_coeffs[j]^e for j,e in D.items()) for c, D in zip(coeffs[i], exps[i])))
         for i in range(1,g+1):
             # a_{g+i} = q^(ri) * a_{g-i}
             bc_coeffs.append(q^(r*i) * bc_coeffs[g-i])
@@ -665,7 +664,7 @@ class BasechangeCache(object):
                 d *= p
         return self._D[n]
     def save(self):
-        return [(n, list(self._D[n])) for n in sorted(self._D.keys())]
+        return [(n, list(self._D[n])) for n in sorted(self._D)]
     def seed(self, s, rs):
         """
         Compute the base change to all divisors of s, and to all entries in the list rs
@@ -782,7 +781,7 @@ class PGType(lazy_attribute):
         else:
             if self.check and (x >= self.check or x <= -self.check):
                 raise ValueError("Out of bounds")
-            if isinstance(x, basestring):
+            if isinstance(x, str):
                 return '"' + x + '"'
             else:
                 return str(x)
@@ -841,10 +840,10 @@ class _rational_list(PGType):
     """
     def load(self, x):
         def recursive_QQ(y):
-            if isinstance(y, basestring):
+            if isinstance(y, str):
                 return QQ(y)
             else:
-                return map(recursive_QQ, y)
+                return list(map(recursive_QQ, y))
         x = PGType.load(self, x)
         return recursive_QQ(x)
     def save(self, x):
@@ -1134,10 +1133,17 @@ class Stage(object):
 class Controller(object):
     def __init__(self, worker_count=1, config=None):
         if config is None:
-            if os.path.exists('config.ini'):
-                config = os.path.abspath('config.ini')
+            # First check whether we're in a Sage terminal with this file attached
+            for F in attached_files():
+                Fbase, Fname = os.path.split(F)
+                if Fname == 'isogeny_classes.sage':
+                    config = os.path.join(Fbase, 'config.ini')
+                    break
             else:
-                raise ValueError("Must have config.ini in directory or specify location")
+                if os.path.exists('config.ini'):
+                    config = os.path.abspath('config.ini')
+                else:
+                    raise ValueError("Must have config.ini in directory or specify location")
         self.config_file = config
         self.cfgp = cfgp = ConfigParser()
         cfgp.read(config)
@@ -1163,18 +1169,18 @@ class Controller(object):
             info = [(key, cfgp.get(stage, key)) for key in cfgp.options(stage)]
             input = [opj(basedir, val) for (key, val) in info if key.startswith('in')]
             if any(key.startswith('out') for key, val in info):
-                output, output_indexes = zip(*((opj(basedir, val), key[3:]) for (key, val) in info if key.startswith('out')))
+                output, output_indexes = list(zip(*((opj(basedir, val), key[3:]) for (key, val) in info if key.startswith('out'))))
             else:
                 output_indexes = output = []
             if any(key.startswith('data') for key, val in info):
-                data, data_indexes = zip(*(([attr.strip() for attr in val.split(',')], key[4:]) for (key, val) in info if key.startswith('data')))
+                data, data_indexes = list(zip(*(([attr.strip() for attr in val.split(',')], key[4:]) for (key, val) in info if key.startswith('data'))))
             else:
                 data_indexes = data = []
             if output_indexes != data_indexes:
                 raise ValueError("Output and data specifications need to be in the same order for %s.\nOne was %s while the other was %s" % (stage, ', '.join(output_indexes), ', '.join(data_indexes)))
             accum = {key[5:]: opj(basedir, val) for (key, val) in info if key.startswith('accum')}
             accum = [accum.get(i) for i in output_indexes]
-            output = zip(output, accum, data)
+            output = list(zip(output, accum, data))
             stages.append(getattr(self.__class__, stage)(self, input=input, output=output))
 
         self.stages = stages
@@ -1485,7 +1491,7 @@ class IsogenyClasses(Controller):
                                 factors = factors[0]
                             else:
                                 factors = sum(factors, ())
-                            factors = Counter(factors).items() # Need list after py3
+                            factors = list(Counter(factors).items())
                             factors.sort(key=lambda ICpair: (ICpair[0].g, ICpair[0].poly))
                             yield IsogenyClass.by_decomposition(factors)
                 self.save(make_all())
@@ -1580,7 +1586,7 @@ class IsogenyClasses(Controller):
                     for IC in source:
                         # We want to sort by poly since g and q are fixed
                         data[tuple(IC.poly)].append(IC)
-                for i, key in enumerate(sorted(data.keys())):
+                for i, key in enumerate(sorted(data)):
                     IC = IsogenyClass.combine(data[key])
                     # Splitting field can be very slow, especially for larger g.
                     # We print the label to the file so that we can find splitting fields
@@ -1707,7 +1713,7 @@ class IsogenyClasses(Controller):
                     clusters[tuple(sorted(set(IC.geometric_number_fields))), tuple(IC.slopes)].append(IC)
                 for cluster in clusters.values():
                     find_twists(cluster)
-                self.save(by_Lpoly[r].values())
+                self.save(list(by_Lpoly[r].values()))
 
     class StageImportJac(Stage):
         """
@@ -1745,7 +1751,7 @@ class IsogenyClasses(Controller):
                     elif qiseven:
                         f, g = map(lambda s: R([[ZZ(c) for c in d.split(',')] for d in s.split('],[')]), poly[3:-3].split(']],[['))
                     elif qisprime:
-                        f, g = R(map(ZZ, poly[1:-1].split(','))), R(0)
+                        f, g = R(list(map(ZZ, poly[1:-1].split(',')))), R(0)
                     else:
                         g = R(0)
                         f, g = R([[ZZ(c) for c in d.split(',')] for d in poly[2:-2].split('],[')]), R(0)
@@ -1854,7 +1860,7 @@ class IsogenyClasses(Controller):
                         data[tuple(IC.poly)].append(IC)
                 self.log("Data loaded")
                 def make_all():
-                    for key in self.enumerate(sorted(data.keys())):
+                    for key in self.enumerate(sorted(data)):
                         ICs = data[key]
                         # splitting_field and geometric_splitting_field might not have been added
                         # to the LMFDB at the time the polynomials were added
@@ -2109,7 +2115,7 @@ class IsogenyClass(PGSaver):
         g, q, coeffs = self.label.split('.')
         self.g = g = ZZ(g)
         self.q = q = ZZ(q)
-        coeffs = map(signed_class_to_int, coeffs.split('_'))
+        coeffs = list(map(signed_class_to_int, coeffs.split('_')))
         coeffs = [ZZ(1)] + coeffs + [q^i * c for (i, c) in enumerate(reversed(coeffs[:-1]), 1)] + [q^g]
         return coeffs
 
@@ -2434,7 +2440,7 @@ class IsogenyClass(PGSaver):
     def __pow__(self, e):
         return IsogenyClass(Lpoly=self.Lpoly^e)
     def __mul__(self, other):
-        if isinstance(other, basestring):
+        if isinstance(other, str):
             other = IsogenyClass(label=other)
         elif isinstance(other, list):
             other = IsogenyClass(poly=other)
@@ -2554,7 +2560,7 @@ class IsogenyClass(PGSaver):
         if 'decomposition' in self.__dict__:
             return sum([IC.polred_coeffs for IC, e in self.decomposition], [])
         else:
-            return [map(ZZ, pari(poly).polredbest().polredabs()) for poly, e in self.Ppoly_factors]
+            return [list(map(ZZ, pari(poly).polredbest().polredabs())) for poly, e in self.Ppoly_factors]
 
     @pg_jsonb(internal=True)
     def geometric_splitting_coeffs(self):
@@ -2596,7 +2602,7 @@ class IsogenyClass(PGSaver):
             if K is None:
                 # all degree 1
                 return [[ZZ(0), ZZ(1)]], ZZ(1)
-            return [map(ZZ, pari(K.DefiningPolynomial().sage()).polredbest().polredabs())], ZZ(K.MaximalOrder().AbsoluteDiscriminant())
+            return [list(map(ZZ, pari(K.DefiningPolynomial().sage()).polredbest().polredabs()))], ZZ(K.MaximalOrder().AbsoluteDiscriminant())
 
         # The set of ramified primes in each stem field must be contained within
         # the union of the sets for each factor (https://math.stackexchange.com/questions/1796472/ramification-of-prime-in-normal-closure)
@@ -2632,7 +2638,7 @@ class IsogenyClass(PGSaver):
                     min_disc = D
                     min_polys = []
                 min_polys.append(f)
-        return [map(ZZ, pari(f.sage()).polredbest().polredabs()) for f in min_polys], ZZ(min_disc)
+        return [list(map(ZZ, pari(f.sage()).polredbest().polredabs())) for f in min_polys], ZZ(min_disc)
 
         # The following code was used to try to work around having to compute the discriminant
         #def ram_factor(m):
@@ -2694,7 +2700,7 @@ class IsogenyClass(PGSaver):
     def _pick_nf(self, coeffs):
         nfs = [self._nf_lookup(f).get('label') for f in coeffs]
         if not any(nf is None for nf in nfs):
-            nfs.sort(key=lambda nf: map(ZZ, nf.split('.')))
+            nfs.sort(key=lambda nf: list(map(ZZ, nf.split('.'))))
             return nfs[0]
 
     @pg_text
@@ -2729,7 +2735,7 @@ class IsogenyClass(PGSaver):
                 bydeg_ppoly[f.degree()].append((f,i))
             for f in hint:
                 bydeg_hint[f.degree()].append(f)
-            for a, b in zip_longest(sorted(bydeg_ppoly.keys(), reverse=True), sorted(bydeg_hint.keys(), reverse=True)):
+            for a, b in zip_longest(sorted(bydeg_ppoly, reverse=True), sorted(bydeg_hint, reverse=True)):
                 if a != b:
                     test_limit = max(a,b)
                     break
@@ -2748,27 +2754,27 @@ class IsogenyClass(PGSaver):
                         K = NumberField(f, 'a')
                         for L in nf_hint.get(a, []):
                             if K.is_isomorphic(L):
-                                polred_coeffs[i] = map(ZZ, L.polynomial())
+                                polred_coeffs[i] = list(map(ZZ, L.polynomial()))
                                 break
                     else:
                         # Just have to match
                         if len(bydeg_hint[a]) == 1:
-                            polred_coeffs[i] = map(ZZ, bydeg_hint[a][0])
+                            polred_coeffs[i] = list(map(ZZ, bydeg_hint[a][0]))
                         else:
                             D = f.discriminant()
                             poss = [ff for ff in bydeg_hint[a] if (disc_dict[ff] / D).is_square()]
                             if len(poss) == 1:
-                                polred_coeffs[i] = map(ZZ, poss[0])
+                                polred_coeffs[i] = list(map(ZZ, poss[0]))
                             else:
                                 K = NumberField(f, 'a')
                                 for ff in poss:
                                     L = NumberField(ff, 'a')
                                     if K.is_isomorphic(L):
-                                        polred_coeffs[i] = map(ZZ, ff)
+                                        polred_coeffs[i] = list(map(ZZ, ff))
                                         break
             for i, ((f, e), polred_f) in enumerate(zip(F, polred_coeffs)):
                 if polred_f is None:
-                    polred_coeffs[i] = map(ZZ, pari(f).polredbest().polredabs())
+                    polred_coeffs[i] = list(map(ZZ, pari(f).polredbest().polredabs()))
             self.polred_coeffs = polred_coeffs
         return self.polred_coeffs
 
@@ -3615,7 +3621,7 @@ def extract_isog_sizes():
                             outs[g,q].write('label:size\ntext:integer\n\n')
                         outs[g,q].write('%s:%s\n' % (label, size))
     finally:
-        print(sorted(outs.keys()))
+        print(sorted(outs))
         for ofile in outs.values():
             if not ofile.closed:
                 ofile.close()
@@ -3747,7 +3753,7 @@ def check_twist_degrees():
     with open("/home/roed/avfq/twist_stats.txt") as F:
         s = F.read()
     s = [c.split(':') for c in s.split('\n')[3:] if c]
-    st = [(ZZ(c[0]), ZZ(c[1]), map(ZZ, c[3][1:-1].split(','))) for c in s if c]
+    st = [(ZZ(c[0]), ZZ(c[1]), list(map(ZZ, c[3][1:-1].split(',')))) for c in s if c]
     Tactual = defaultdict(set)
     lastq = defaultdict(ZZ)
     lastd = defaultdict(list)
@@ -3799,7 +3805,7 @@ def twist_deg_search(IC, g=2, degs=[15,20,30], qL=[4,5,9,16,25,49,64,81,125,169,
 def nf_search(IC, g=2, deg=16):
     C = CyclotomicField(deg)
     results = []
-    labels = set([db.nf_fields.lucky({'coeffs':map(ZZ, pari(K.defining_polynomial()).polredbest().polredabs())}, 'label') for K, map1, map2 in C.subfields()])
+    labels = set([db.nf_fields.lucky({'coeffs':list(map(ZZ, pari(K.defining_polynomial()).polredbest().polredabs()))}, 'label') for K, map1, map2 in C.subfields()])
     for gg,q in sorted(IC.gq):
         if g == gg:
             print(q, len(results))
