@@ -1,4 +1,4 @@
-"""
+r"""
 This file contains classes for computing isogeny classes of Abelian varieties over finite fields.
 
 The computation rests on the Honda-Tate theorem, which gives a bijection between isogeny classes
@@ -121,6 +121,7 @@ from sage.misc.lazy_attribute import lazy_attribute
 from sage.misc.cachefunc import cached_method, cached_function
 from sage.misc.mrange import cartesian_product_iterator
 from sage.all import Polynomial
+from sage.rings.polynomial.weil.weil_polynomials import WeilPolynomials
 import json, os, re, sys, time, shutil
 import psutil
 import heapq
@@ -128,10 +129,9 @@ opj, ope = os.path.join, os.path.exists
 from copy import copy
 from collections import defaultdict, Counter
 from multiprocessing import Process, Queue
-from string import letters
 from datetime import datetime
-from itertools import combinations, combinations_with_replacement, imap, izip_longest, islice
-from ConfigParser import ConfigParser, NoOptionError
+from itertools import combinations, combinations_with_replacement, zip_longest, islice
+from configparser import ConfigParser, NoOptionError
 from lmfdb.backend.database import PostgresDatabase
 from psycopg2.sql import SQL, Identifier, Literal
 from cypari2.handle_error import PariError
@@ -143,7 +143,6 @@ try:
     sys.path.append(os.path.dirname(os.path.realpath(__file__)))
 except NameError:
     pass
-load("weil_polynomials.pyx")
 
 # We need a different connection to postgres for each process.
 @cached_function
@@ -378,7 +377,7 @@ def hom_degrees(f, g, q):
     try:
         factors = tcp.factor()
     except PariError:
-        print "Pari error in res(%s, %s)" % (f, g)
+        print("Pari error in res(%s, %s)" % (f, g))
         # Try to work around the bug using squarefree decomposition
         sqfree = tcp.squarefree_decomposition()
         factors = []
@@ -862,7 +861,7 @@ class _rational_mults(PGType):
     are emphasized by appending a letter, e.g. ["1/2A", "1/2B", "2/3A"]
     """
     def load(self, x):
-        x = sage_eval(x.translate(None, letters).replace('{','[').replace('}',']')) # Remove letters
+        x = sage_eval(re.sub(r'[A-Z]', '', x).replace('{','[').replace('}',']')) # Remove letters
         return [QQ(y) for y in x]
     def save(self, x):
         cntr = Counter()
@@ -1150,6 +1149,7 @@ class Controller(object):
         for subdir in subdirs:
             if not ope(opj(basedir, subdir)):
                 os.mkdir(opj(basedir, subdir))
+        self.plan = plan = ['Stage'+stage.strip() for stage in cfgp.get('plan', 'stages').split(',')]
         self._extra_init()
 
         # Create Stages
@@ -1157,7 +1157,6 @@ class Controller(object):
         self.logfile_template = opj(basedir, cfgp.get('logging', 'logfile'))
         self.logfrequency = int(cfgp.get('logging', 'logfrequency'))
         self.logheader = cfgp.get('logging', 'logheader') + ' '
-        plan = ['Stage'+stage.strip() for stage in cfgp.get('plan', 'stages').split(',')]
         for stage in plan:
             if stage not in cfgp.sections():
                 raise ValueError("Missing section %s"%stage)
@@ -1203,13 +1202,13 @@ class Controller(object):
         while tasks:
             task = tasks.pop(0)
             if task.done():
-                print "Already complete " + task.logheader
+                print("Already complete " + task.logheader)
             elif isinstance(task, GenericSpawner):
-                print "Spawning " + task.logheader
+                print("Spawning " + task.logheader)
                 tasks[0:0] = task.spawn()
                 continue
             else:
-                print "Starting " + task.logheader
+                print("Starting " + task.logheader)
                 task._run()
 
     def run_parallel(self, worker_count=8):
@@ -1223,17 +1222,17 @@ class Controller(object):
                 while i < len(tasks) and len(processes) < worker_count:
                     if tasks[i].done():
                         task = tasks.pop(i)
-                        print "Already complete " + task.logheader
+                        print("Already complete " + task.logheader)
                     elif tasks[i].ready():
                         task = tasks.pop(i)
                         if isinstance(task, GenericSpawner):
                             # Note that the spawning is done in the master process,
                             # so make sure it's not slow!
-                            print "Spawning " + task.logheader
+                            print("Spawning " + task.logheader)
                             tasks[i:i] = task.spawn()
                         else:
                             P = Process(target=task._run)
-                            print "Starting " + task.logheader
+                            print("Starting " + task.logheader)
                             P.start()
                             processes[pcounter] = (P, task)
                             pcounter += 1
@@ -1244,7 +1243,7 @@ class Controller(object):
                 for p, (P, task) in list(processes.items()):
                     if not P.is_alive():
                         processes.pop(p)
-                        print "Finished " + task.logheader
+                        print("Finished " + task.logheader)
         except KeyboardInterrupt:
             # help in debugging
             return tasks, processes
@@ -1269,11 +1268,11 @@ class Controller(object):
                 else:
                     unready[task.g][task.q].append(task)
             if not ready and not unready:
-                print stage.name, "complete"
+                print(stage.name, "complete")
             elif not ready and not done:
                 pass # Not ready to start this stage
             else:
-                print stage.name, "in progress"
+                print(stage.name, "in progress")
                 if done:
                     all_done = defaultdict(set)
                     for g, qs in done.items():
@@ -1281,15 +1280,15 @@ class Controller(object):
                             if q not in ready[g] and q not in unready[g]:
                                 all_done[g].add(q)
                     if all_done:
-                        print " Complete:"
+                        print(" Complete:")
                         for g, qs in sorted(all_done.items()):
-                            print "  g=%s - q="%g + ",".join(map(str, sorted(qs)))
+                            print("  g=%s - q="%g + ",".join(map(str, sorted(qs))))
                     if ready:
                         if any(ready.values()):
-                            print " Ready:"
+                            print(" Ready:")
                         for g, qs in sorted(ready.items()):
                             if qs:
-                                print "  g=%s - q="%g + ",".join(map(str, sorted(qs)))
+                                print("  g=%s - q="%g + ",".join(map(str, sorted(qs))))
                         in_progress = []
                         for g, by_g in ready.items():
                             for q, by_q in by_g.items():
@@ -1303,7 +1302,7 @@ class Controller(object):
                                                 in_progress.append(stask)
                         in_progress.sort(key=lambda task: (task.g, task.q))
                         if in_progress:
-                            print " Writing files:"
+                            print(" Writing files:")
                         for task in in_progress:
                             for outfile, accum, attributes in stage.output:
                                 outfile = outfile.format(**task.kwds)
@@ -1312,12 +1311,12 @@ class Controller(object):
                                         for lineno, line in enumerate(F):
                                             pass
                                     if lineno > 3:
-                                        print " ", outfile, lineno
+                                        print(" ", outfile, lineno)
                                         try:
                                             with open(task._logfile) as F:
                                                 for line in F:
                                                     pass
-                                            print " "*(len(outfile)+2), line.strip()
+                                            print(" "*(len(outfile)+2), line.strip())
                                         except IOError:
                                             pass
 
@@ -1376,11 +1375,11 @@ class IsogenyClasses(Controller):
                 raise ValueError("No qs specified for the given g")
             gq_dict[g] = D = set(qs)
             for q in qs:
-                if any(stage.shortname in ['Comp', 'Bchange'] for stage in self.stages):
+                if any(stage in ['StageCompute', 'StageBasechange'] for stage in self.plan):
                     for d in q.divisors():
                         if d != 1 and d not in D:
                             raise ValueError("q=%s is included for g=% but its divisor %s is not" % (q, g, d))
-                if any(stage.shortname == 'GenAll' for stage in self.stages):
+                if any(stage == 'StageGenerateAll' for stage in self.plan):
                     for gg in range(1,g):
                         if q not in gq_dict[gg]:
                             raise ValueError("g=%s is included for q=%s but g=%s is not" % (g, q, gg))
@@ -1407,23 +1406,23 @@ class IsogenyClasses(Controller):
             cols = set(db[table].search_cols)
             extra = data - cols
             if extra:
-                print "ERROR - EXTRA COLUMNS IN %s: %s" % (table, ", ".join(sorted(extra)))
+                print("ERROR - EXTRA COLUMNS IN %s: %s" % (table, ", ".join(sorted(extra))))
             missing = cols - data
             if missing:
-                print "ERROR - MISSING COLUMNS IN %s: %s" % (table, ", ".join(sorted(missing)))
+                print("ERROR - MISSING COLUMNS IN %s: %s" % (table, ", ".join(sorted(missing))))
             if cls is not None:
                 attributes = [getattr(cls, x) for x in dir(cls)]
                 attributes = [attr for attr in attributes if isinstance(attr, PGType) and not attr.internal]
                 for attr in attributes:
                     if attr.__name__ in cols and db[table].col_type[attr.__name__] != attr.pg_type:
-                        print "ERROR - BAD TYPE IN %s: %s is %s not %s" % (table, attr.__name__, db[table].col_type[attr.__name__], attr.pg_type)
+                        print("ERROR - BAD TYPE IN %s: %s is %s not %s" % (table, attr.__name__, db[table].col_type[attr.__name__], attr.pg_type))
                 attr_names = set([attr.__name__ for attr in attributes])
                 extra = data - attr_names
                 if extra:
-                    print "ERROR - NOT DEFINED IN %s: %s" % (table, ", ".join(sorted(extra)))
+                    print("ERROR - NOT DEFINED IN %s: %s" % (table, ", ".join(sorted(extra))))
                 missing = attr_names - data
                 if missing:
-                    print "ERROR - UNSAVED IN %s: %s" % (table, ", ".join(sorted(missing)))
+                    print("ERROR - UNSAVED IN %s: %s" % (table, ", ".join(sorted(missing))))
 
     class StageLoadFields(Stage):
         unique = True
@@ -2172,7 +2171,7 @@ class IsogenyClass(PGSaver):
         try:
             return [(np(i+1) - np(i)) / r for i in range(2*g)]
         except SignError:
-            print self.label
+            print(self.label)
             raise
 
     @pg_smallint
@@ -2665,7 +2664,7 @@ class IsogenyClass(PGSaver):
         #min_index = ZZ(min_index)
         #for f in stems[1:]:
         #    if self.sc_verbose: # sc_verbose is a verbose flag
-        #        print f
+        #        print(f)
         #    nf = f.NumberField()
         #    B = ZZ(1).factor()
         #    for deg in min_index.divisors()[1:-1]:
@@ -2677,13 +2676,13 @@ class IsogenyClass(PGSaver):
         #        # At degree 8 we get enough data to rule out the case.
         #        if prod(B) > min_disc:
         #            if self.sc_verbose:
-        #                print "Skipping after degree", deg
+        #                print("Skipping after degree", deg)
         #            break
         #        elif self.sc_verbose:
-        #            print "Checked degree", deg
+        #            print("Checked degree", deg)
         #    else:
         #        if self.sc_verbose:
-        #            print "Computing discriminant"
+        #            print("Computing discriminant")
         #        #D = compute_disc(nf, min_disc)
         #        D = None
         #        if D is not None:
@@ -2730,7 +2729,7 @@ class IsogenyClass(PGSaver):
                 bydeg_ppoly[f.degree()].append((f,i))
             for f in hint:
                 bydeg_hint[f.degree()].append(f)
-            for a, b in izip_longest(sorted(bydeg_ppoly.keys(), reverse=True), sorted(bydeg_hint.keys(), reverse=True)):
+            for a, b in zip_longest(sorted(bydeg_ppoly.keys(), reverse=True), sorted(bydeg_hint.keys(), reverse=True)):
                 if a != b:
                     test_limit = max(a,b)
                     break
@@ -3023,9 +3022,9 @@ class IsogenyClass(PGSaver):
                 K.<F> = NumberField(poly)
                 Kplus.<Fplus> = NumberField(plus_poly)
             except ValueError:
-                print self.label
-                print poly.factor()
-                print plus_poly.factor()
+                print(self.label)
+                print(poly.factor())
+                print(plus_poly.factor())
                 raise
             D = K.discriminant()
             Dplus = Kplus.discriminant()
@@ -3036,8 +3035,8 @@ class IsogenyClass(PGSaver):
             try:
                 conj = K.hom([V])
             except TypeError:
-                print self.label
-                print poly
+                print(self.label)
+                print(poly)
                 raise
             for PP, e in K.ideal(F - V).factor():
                 # Being inert in K/K+ is the same as being equal to the complex conjugate
@@ -3603,7 +3602,7 @@ def extract_isog_sizes():
             with open(infile) as Fin:
                 for i, line in enumerate(Fin):
                     if i and i%10000 == 0:
-                        print infile, i
+                        print(infile, i)
                     label, order_is_bass, order_is_maximal, size = line.strip().split(':')
                     if not include_max and order_is_maximal == '1':
                         # Don't add duplicates
@@ -3616,7 +3615,7 @@ def extract_isog_sizes():
                             outs[g,q].write('label:size\ntext:integer\n\n')
                         outs[g,q].write('%s:%s\n' % (label, size))
     finally:
-        print sorted(outs.keys())
+        print(sorted(outs.keys()))
         for ofile in outs.values():
             if not ofile.closed:
                 ofile.close()
@@ -3631,7 +3630,7 @@ def split_easy_isoms():
         with open('/home/stmar/isomorphism_classes_easy_new.txt') as Fin:
             for i, line in enumerate(Fin):
                 if i and i%10000 == 0:
-                    print i
+                    print(i)
                 if bad_entry is not None:
                     bad_context.append((i, bad_entry[0], bad_entry[1], line.strip()))
                     bad_entry = None
@@ -3668,8 +3667,8 @@ def show_ratios():
     for g in range(1,6):
         for q in srange(2, 500):
             if q <= max_q[g] and q.is_prime_power():
-                print '%6s/%-6s' % (isoms[g,q], totals[g,q]),
-        print ''
+                print('%6s/%-6s' % (isoms[g,q], totals[g,q]), end='')
+        print('')
 
 def fix_138():
     inbase = '/home/stmar/138_output'
@@ -3690,19 +3689,19 @@ def extract_bad():
         with open(outfile, 'w') as Fout:
             for i, line in enumerate(Fin):
                 if i in bad_lines:
-                    print i
+                    print(i)
                     Fout.write(line)
 
 def actual_twist_deg(A, B, g, q, show=False):
     # A and B should be L-polynomials
     x = A.parent().gen()
     square = tensor_charpoly(A,B)(x/q)
-    if show: print square
+    if show: print(square)
     fieldext = ZZ(1)
     for factor, power in square.factor():
         m = Cyclotomic().order(factor)
         if m > 0:
-            if show: print factor, m
+            if show: print(factor, m)
             fieldext = fieldext.lcm(m)
     if base_change(A, fieldext, g=g, q=q) == base_change(B, fieldext, g=g, q=q):
         return fieldext
@@ -3712,7 +3711,7 @@ def check_pair_lcms(g, q):
     results = set()
     R = ZZ['x']
     data = list(get_db().av_fq_isog.search({'g':g, 'q':q}, ['label', 'poly', 'geometric_extension_degree', 'twists']))
-    print len(data)
+    print(len(data))
     for A, B in combinations(data, 2):
         Atwists = [rec[0] for rec in A['twists']]
         Btwists = [rec[0] for rec in B['twists']]
@@ -3721,18 +3720,18 @@ def check_pair_lcms(g, q):
             results.add(actual)
         #if actual is None:
         #    if A['label'] in Btwists:
-        #        print A['label'], "NOT a twist of", B['label']
+        #        print(A['label'], "NOT a twist of", B['label'])
         #    if B['label'] in Atwists:
-        #        print B['label'], "NOT a twist of", A['label']
+        #        print(B['label'], "NOT a twist of", A['label'])
         #else:
         #    if A['label'] not in Btwists:
-        #        print A['label'], "IS a twist of", B['label']
+        #        print(A['label'], "IS a twist of", B['label'])
         #    if B['label'] not in Atwists:
-        #        print B['label'], "IS a twist of", A['label']
+        #        print(B['label'], "IS a twist of", A['label'])
         #    results.add(actual)
             #predicted = 2*lcm(A['geometric_extension_degree'], B['geometric_extension_degree'])
             #if predicted % actual != 0:
-            #    print A['label'], B['label'], predicted, actual
+            #    print(A['label'], B['label'], predicted, actual)
             #    results.add((predicted, actual))
     return results
 
@@ -3763,7 +3762,7 @@ def check_twist_degrees():
         diff = set(TD[g]) - set(Tactual[g])
         extra = set(Tactual[g]) - set(TD[g])
         if extra:
-            print "WARNING, EXTRA!", g, extra
+            print("WARNING, EXTRA!", g, extra)
         prim = []
         for m in diff:
             for d in m.divisors():
@@ -3771,10 +3770,10 @@ def check_twist_degrees():
                     break
             else:
                 prim.append(m)
-        print g, sorted(prim)
+        print(g, sorted(prim))
 
     for g,q in sorted(lastd):
-        print "g =", g, "q =", q, ":", sorted(lastd[g,q])
+        print("g =", g, "q =", q, ":", sorted(lastd[g,q]))
 
 def twist_deg_search(IC, g=2, degs=[15,20,30], qL=[4,5,9,16,25,49,64,81,125,169,256,625,729,1024]):
     results = []
@@ -3794,7 +3793,7 @@ def twist_deg_search(IC, g=2, degs=[15,20,30], qL=[4,5,9,16,25,49,64,81,125,169,
                             if not f.roots(C[d]):
                                 results.append((A.label, B.label, A.Ppoly, B.Ppoly, A.number_fields, B.number_fields, A.geometric_number_fields))
                                 break
-        print q, len(results), results[-1] if results else ""
+        print(q, len(results), results[-1] if results else "")
     return results
 
 def nf_search(IC, g=2, deg=16):
@@ -3803,7 +3802,7 @@ def nf_search(IC, g=2, deg=16):
     labels = set([db.nf_fields.lucky({'coeffs':map(ZZ, pari(K.defining_polynomial()).polredbest().polredabs())}, 'label') for K, map1, map2 in C.subfields()])
     for gg,q in sorted(IC.gq):
         if g == gg:
-            print q, len(results)
+            print(q, len(results))
             filename = '/home/roed/avfq/basic/weil_all_g{g}_q{q}.txt'.format(g=g, q=q)
             for A in IC.load(filename):
                 if all(nf in labels for nf in A.number_fields):
@@ -3831,6 +3830,6 @@ def in_progress_log(g, q):
         bytime = [(datetime.utcnow() - datetime.strptime(start[1:-1], '%Y-%m-%d %H:%M:%S.%f'), counter, i, label) for i, (counter, label, start) in recent.items()]
         bytime.sort(reverse=True)
         for duration, counter, i, label in bytime:
-            print str(duration), i, counter, label
+            print(str(duration), i, counter, label)
         if done:
-            print "Done:", sorted(done)
+            print("Done:", sorted(done))
