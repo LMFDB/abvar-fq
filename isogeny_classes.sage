@@ -1575,7 +1575,8 @@ class IsogenyClasses(Controller):
                 return all(ope(self._done(data[-1])) for data in self.input_data[:2])
         class Task(GenericTask):
             def ready(self):
-                # there's an optional input where you can provide information from other runs after changing the chunksize
+                # there's an optional input where you can provide information
+                # from other runs after changing the chunksize
                 return all(ope(self._done(data[-1])) for data in self.input_data[:2])
             def run(self):
                 ICs = []
@@ -1603,6 +1604,30 @@ class IsogenyClasses(Controller):
                         UFR = [UnknownFieldRecord(f, D) for f in coeffs]
                         NFs.extend([U for U in UFR if U.label is None])
                 self.save(NFs, ICs)
+
+    class StageResetSplittingFields(Stage):
+        """
+        This stage copies the data from the parallelized output files of StageSplittingFields into a single
+        partial output file and deletes the originals.  It is intended for use if StageSplittingFields is
+        interrupted and you want to change the chunksize (since some chunks can take far far longer than others)
+        """
+        name = 'Reset Splitting Fields'
+        shortname = 'RSFields'
+        class Task(GenericAccumulator):
+            def ready(self):
+                # This stage is intended to be run to clean up after a previous run of StageSplittingFields
+                # so it's always ready
+                return True
+
+            @lazy_attribute
+            def input_data(self):
+                fldr, filebase = os.path.split(self.stage.input[0].format(**self.kwds))
+                ofile = self.stage.output[0][0].format(**self.kwds)
+                return [(ofile, opj(fldr, filename)) for filename in os.listdir(fldr) if filename.startswith(filebase) and len(filename) > len(filebase)]
+
+            @lazy_attribute
+            def donefiles(self):
+                return [self._done(output.format(**self.kwds)) for (output, accum, attributes) in self.stage.output]
 
     class StageBasechange(Stage):
                 # Need to fix the following issues:
@@ -2854,6 +2879,8 @@ class IsogenyClass(PGSaver):
         # Set by base change stage
         return self.geometric_basechange.galois_groups
 
+    _angle_rank_sprec = 25 # This is the square root of the precision used for angle rank computations
+
     @staticmethod
     def _is_significant(rel, sprec):
         m = min(map(abs, rel))
@@ -2866,29 +2893,155 @@ class IsogenyClass(PGSaver):
             return True
 
     @classmethod
-    def _compute_rank(cls, numbers, sprec):
-        if len(numbers) == 1:
-            return 1
-        rel = [ZZ(c) for c in gp.lindep(numbers)]
+    def _compute_relations(cls, numbers, used=[]):
+        sprec = cls._angle_rank_sprec
+        if len(numbers) - len(used) == 1:
+            # Numbers nonzero, so can't have all relations
+            return []
+        available = [x for (i, x) in enumerate(numbers) if i not in used]
+        rel = [ZZ(c) for c in gp.lindep(available)]
         if cls._is_significant(rel, sprec):
-            # significant relation, so we remove one of the related numbers and recurse
-            for i, c in enumerate(rel):
+            # significant relation, so we recurse, after restoring the used positions
+            fullrel = []
+            relpos = 0
+            for i in range(len(numbers)):
+                if i in used:
+                    fullrel.append(ZZ(0))
+                else:
+                    fullrel.append(rel[relpos])
+                    relpos += 1
+            for i, c in enumerate(fullrel):
                 if c != 0:
-                    numbers.pop(i)
-                    return cls._compute_rank(numbers, sprec)
+                    return [tuple(fullrel)] + cls._compute_relations(numbers, used + [i])
         else:
-            # Relation not significant, so full rank
-            return len(numbers)
+            return []
+
+    @lazy_attribute
+    def _mult_free_angles(self):
+        """
+        Returns a list of 
+        """
+        sprec = self._angle_rank_sprec
+        prec = sprec^2
+        roots = self.Ppoly.radical().roots(ComplexField(prec), multiplicities=False)
+        angles = [z.arg()/RealField(prec)(pi) for z in roots]
+        return sorted(angle for angle in angles if 0 < angle < 1) + [1]
+
+    @lazy_attribute
+    def angle_relations(self):
+        """
+        Additive relations with integer entries among the angles in self._mult_free_angles
+        """
+        return self._compute_relations(self._mult_free_angles)
 
     @pg_smallint
     def angle_rank(self):
-        sprec = 25
-        prec = sprec^2
         # We can't just use angles since we need higher precision (and no multiplicities)
-        roots = self.Ppoly.radical().roots(ComplexField(prec), multiplicities=False)
-        angles = [z.arg()/RealField(prec)(pi) for z in roots]
-        angles = [angle for angle in angles if 0 < angle < 1] + [1]
-        return self._compute_rank(angles, sprec) - 1
+        return len(self._mult_free_angles) - len(self.angle_relations) - 1
+
+    def angle_rank_certificate(self, splitting_poly=None):
+        """
+        We prove that the angle rank computed above is a correct upper bound on the actual angle
+        rank by finding relations between the roots of the L-polynomial.
+
+        The most expensive part of this computation is the computation of a splitting field
+        for the L-polynomial, so the user can provide it if known.
+
+        INPUT:
+
+        - ``splitting_poly`` -- a polynomial defining a number field
+            in which the L-polynomial splits completely.  If not given, will be computed.
+
+        OUTPUT:
+
+        - a list ``Z`` of roots of the Weil polynomial in a splitting field, one from
+          each conjugate pair.
+        - a list of independent relations ``R`` between the roots.
+
+        A relation is defined as a list of integers with
+
+        prod(z^c for (z,c) in zip(Z + [-q], R)) == 1
+
+        Note that the relations will have length one longer than the list of roots; the
+        last entry gives the multiplicity of `-q` in the relation.
+        """
+        if splitting_poly is None:
+            try:
+                splitting_poly = magma(self.Ppoly).SplittingField().DefiningPolynomial().sage()
+            except TypeError: # magma not installed
+                splitting_poly = self.Ppoly.splitting_field('a').defining_polynomial()
+        relations = self.angle_relations
+        K.<a> = NumberField(splitting_poly)
+        roots = self.Ppoly.roots(K, multiplicities=False)
+        # We want to reorder the roots so that they match the angles under some complex embedding
+        prec = self._angle_rank_sprec^2
+        emb = K.complex_embeddings(prec)[0]
+        upper_roots = [r for r in roots if emb(r).imag() > 0]
+        upper_roots.sort(key=lambda r: emb(r).arg())
+        cert = (upper_roots, relations)
+        self.verify_angle_rank(cert)
+        return cert
+
+    def verify_angle_rank(self, cert=None):
+        """
+        INPUT:
+
+        - ``cert`` -- a pair as output by :meth:`angle_rank_certificate`
+
+        OUTPUT:
+
+        The upper bound on the angle rank proven by the certificate.  Any problems with
+        the certificate will cause an AssertionError to be raised.
+        """
+        if cert is None:
+            cert = self.angle_rank_certificate()
+        roots, relations = cert
+        # Check that the roots are actually roots
+        for i,r in enumerate(roots):
+            assert r.parent().is_exact(), "Root %s must be exact" % (i+1)
+            assert self.Ppoly(r) == 0, "Root %s is not a root of %s" % (i+1, self.Ppoly)
+        # Check that the roots aren't duplicates or conjugate
+        for i,r in enumerate(roots):
+            for j,s in enumerate(roots):
+                if i != j:
+                    assert r != s, "Roots %s and %s are duplicate" % (i+1, j+1)
+                assert r*s != self.q, "Roots %s and %s are conjugate" % (i+1, j+1)
+        # Check that the roots are complete
+        f = self.Ppoly
+        # First we deal with possible real roots
+        R0 = f.parent()
+        x = R0.gen()
+        if self.q.is_square():
+            q2 = self.q.isqrt()
+            reals = [x - q2, x + q2]
+        else:
+            reals = [x^2 - self.q]
+        for real_poly in reals:
+            f = f // real_poly^(f.valuation(real_poly))
+        # Shortcut: if the degree of f is twice the number of roots, we're okay
+        if f.degree() != 2 * len(roots):
+            # Otherwise we have to take into account the multiplicity of each root
+            total = 2 * len(roots)
+            derivs = [f.derivative()]
+            for r in roots:
+                d = f.derivative()
+                extra_mult = 0
+                while d(r) == 0:
+                    d = d.derivative()
+                    extra_mult += 1
+                total += 2 * extra_mult
+                if total == f.degree():
+                    break
+            else:
+                raise AssertionError("Missing roots")
+        # Check that the relations are satisfied
+        roots = roots + [-self.q]
+        for i,rel in enumerate(relations):
+            assert len(rel) == len(roots), "Relation %s of the wrong length" % (i+1)
+            assert prod(r^c for (r,c) in zip(roots, rel)) == 1, "Relation %s not satisfied" % (i+1)
+        # Check that the relations are independent
+        assert matrix(relations).rank() == len(relations), "Relations not independent"
+        return len(roots) - len(relations)
 
     @pg_smallint
     def geometric_extension_degree(self):
@@ -3838,4 +3991,14 @@ def in_progress_log(g, q):
         for duration, counter, i, label in bytime:
             print(str(duration), i, counter, label)
         if done:
-            print("Done:", sorted(done))
+            done = sorted(done)
+            intervals = []
+            start = done[0]
+            for x, y in zip(done, done[1:] + [None]):
+                if y != x+1:
+                    if x == start:
+                        intervals.append(str(x))
+                    else:
+                        intervals.append("%s-%s" % (start, x))
+                    start = y
+            print("Done:", ", ".join(intervals))
